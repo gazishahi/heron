@@ -122,7 +122,7 @@ public enum URLFetcher {
         return URLSession(configuration: configuration, delegate: RedirectPolicy(), delegateQueue: nil)
     }()
 
-    public struct Page {
+    public struct Page: Sendable {
         public let finalURL: URL
         public let contentType: String
         public let text: String
