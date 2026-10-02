@@ -148,6 +148,7 @@ public enum GitDiffComputer {
     }
 
     private static func runGit(_ args: [String], cwd: String) -> String {
+        guard DeveloperTools.gitInstalled else { return "" }
         let process = Process()
         process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")

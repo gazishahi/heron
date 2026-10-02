@@ -119,6 +119,8 @@ public enum GitPaths {
     }
 
     private static func launchGit(_ args: [String], cwd: String, extraEnvironment: [String: String]) -> (success: Bool, output: String) {
+        // No git (no Command Line Tools): running the stub would raise macOS's install dialog.
+        guard DeveloperTools.gitInstalled else { return (false, DeveloperTools.missingMessage) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args
@@ -158,6 +160,7 @@ public enum GitPaths {
     }
 
     private static func launchGitRaw(_ args: [String], cwd: String) -> (success: Bool, output: String) {
+        guard DeveloperTools.gitInstalled else { return (false, "") }
         let process = Process()
         process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
