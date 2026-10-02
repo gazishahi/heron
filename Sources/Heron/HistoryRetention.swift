@@ -16,8 +16,8 @@ public enum HistoryRetention: Int, CaseIterable {
     private static let defaultsKey = "SideHistoryRetentionDays"
 
     public static var current: HistoryRetention {
-        get { HistoryRetention(rawValue: UserDefaults.standard.integer(forKey: defaultsKey)) ?? .forever }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey) }
+        get { HistoryRetention(rawValue: HeronDefaults.store.integer(forKey: defaultsKey)) ?? .forever }
+        set { HeronDefaults.store.set(newValue.rawValue, forKey: defaultsKey) }
     }
 
     public var displayName: String {

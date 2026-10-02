@@ -20,12 +20,12 @@ public enum UsageBudget {
     /// a zero-dollar budget that blocks everything is never what someone means.
     public static var monthlyLimitUSD: Double? {
         get {
-            let stored = UserDefaults.standard.double(forKey: limitKey)
+            let stored = HeronDefaults.store.double(forKey: limitKey)
             return stored > 0 ? stored : nil
         }
         set {
             let value = newValue ?? 0
-            UserDefaults.standard.set(value > 0 ? value : 0, forKey: limitKey)
+            HeronDefaults.store.set(value > 0 ? value : 0, forKey: limitKey)
         }
     }
 

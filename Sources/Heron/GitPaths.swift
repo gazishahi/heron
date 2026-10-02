@@ -123,11 +123,9 @@ public enum GitPaths {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        if !extraEnvironment.isEmpty {
-            var environment = ProcessInfo.processInfo.environment
-            for (key, value) in extraEnvironment { environment[key] = value }
-            process.environment = environment
-        }
+        var environment = SpawnEnvironment.current()
+        for (key, value) in extraEnvironment { environment[key] = value }
+        process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -161,6 +159,7 @@ public enum GitPaths {
 
     private static func launchGitRaw(_ args: [String], cwd: String) -> (success: Bool, output: String) {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)

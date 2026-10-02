@@ -9,7 +9,7 @@ final class ProjectTasksTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         savedDefaults = ProjectRules.defaults
-        ProjectRules.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        ProjectRules.defaults = throwawayDefaults()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("tasks-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }

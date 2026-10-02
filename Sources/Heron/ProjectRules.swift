@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// A project's own standing instructions to the agent — the "Library-lite" of the constitution's
@@ -17,7 +18,7 @@ public enum ProjectRules {
     /// Where this type persists. `.standard` in the app; tests point it at a private suite, because
     /// parallel test processes sharing one defaults domain lose each other's writes — the flake
     /// that showed up as an acknowledgement or a cache entry vanishing between two lines of a test.
-    public nonisolated(unsafe) static var defaults: UserDefaults = .standard
+    public nonisolated(unsafe) static var defaults: UserDefaults = HeronDefaults.store
 
     /// Searched in order, first match wins. `SIDE.md` is the native name; the others are read
     /// because a project that already tells *some* coding agent how to behave is telling this
@@ -53,10 +54,12 @@ public enum ProjectRules {
     /// said when it was read, not a permanent grant to whatever it says later.
     private static let acknowledgedKey = "SideAcknowledgedProjectRules"
 
-    private static func fingerprint(url: URL, contents: String) -> String {
-        var hash: UInt64 = 0xcbf29ce484222325
-        for byte in Array(contents.utf8) { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
-        return "\(url.standardizedFileURL.path)#\(String(hash, radix: 36))"
+    /// SHA-256: the FNV-1a-64 these were before let someone make a malicious file with the
+    /// fingerprint of a benign one already accepted (three collisions in 25 minutes on one core;
+    /// 2026-09-30 audit, SEC-13). Old entries match nothing, so each file is asked about again.
+    static func fingerprint(url: URL, contents: String) -> String {
+        let digest = SHA256.hash(data: Data(contents.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "\(url.standardizedFileURL.path)#sha256:\(digest)"
     }
 
     public static func isAcknowledged(url: URL, contents: String) -> Bool {

@@ -80,11 +80,11 @@ public final class ProviderRegistryStore: @unchecked Sendable {
         guard let definition = provider(for: providerId),
               definition.id == "anthropic" || definition.kind == .local else { completion?(false); return }
         let key = Self.refreshedKey(providerId)
-        if !force, let last = UserDefaults.standard.object(forKey: key) as? Date, Date().timeIntervalSince(last) < Self.modelRefreshInterval {
+        if !force, let last = HeronDefaults.store.object(forKey: key) as? Date, Date().timeIntervalSince(last) < Self.modelRefreshInterval {
             completion?(false)
             return
         }
-        UserDefaults.standard.set(Date(), forKey: key)
+        HeronDefaults.store.set(Date(), forKey: key)
         // Anthropic's base URL is the host; a local server's already ends in its API root
         // (`…/v1`, as chat/completions is appended to it), so its list is `models` under that.
         let path = definition.id == "anthropic" ? "v1/models" : "models"
@@ -101,7 +101,7 @@ public final class ProviderRegistryStore: @unchecked Sendable {
             DispatchQueue.main.async {
                 guard let self, let fetched, !fetched.isEmpty, var current = self.provider(for: providerId) else {
                     // A failed ask is tried again next time rather than a day later.
-                    if fetched == nil { UserDefaults.standard.removeObject(forKey: key) }
+                    if fetched == nil { HeronDefaults.store.removeObject(forKey: key) }
                     completion?(false)
                     return
                 }
@@ -287,10 +287,10 @@ public final class ProviderRegistryStore: @unchecked Sendable {
     /// the Keychain that session.
     private func migrateLegacyDevKeyIfNeeded() {
         let legacyKey = "side.dev.anthropic-api-key"
-        guard let legacy = UserDefaults.standard.string(forKey: legacyKey), !legacy.isEmpty,
+        guard let legacy = HeronDefaults.store.string(forKey: legacyKey), !legacy.isEmpty,
               !KeychainStore.hasSecret(account: "anthropic") else { return }
         if KeychainStore.set(secret: legacy, account: "anthropic") {
-            UserDefaults.standard.removeObject(forKey: legacyKey)
+            HeronDefaults.store.removeObject(forKey: legacyKey)
         }
     }
 }

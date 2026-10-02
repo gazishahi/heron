@@ -73,15 +73,7 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     /// process's own, gone when it exits. Parallel test processes read-modify-wrote the real
     /// list at once, so agents vanished mid-test and test agents were left in the owner's Side
     /// (2026-09-30 audit, TST-1).
-    nonisolated(unsafe) public static let defaults: UserDefaults = {
-        let environment = ProcessInfo.processInfo.environment
-        guard environment["XCTestBundlePath"] != nil || environment["XCTestConfigurationFilePath"] != nil || NSClassFromString("XCTestCase") != nil,
-              let suite = UserDefaults(suiteName: testSuiteName) else { return .standard }
-        suite.removePersistentDomain(forName: testSuiteName)
-        atexit { UserDefaults.standard.removePersistentDomain(forName: ACPAgent.testSuiteName) }
-        return suite
-    }()
-    static let testSuiteName = "com.shahi.side.tests.\(ProcessInfo.processInfo.processIdentifier)"
+    public static var defaults: UserDefaults { HeronDefaults.store }
 
     public static var custom: [ACPAgent] {
         guard let data = defaults.data(forKey: customKey),
@@ -122,9 +114,19 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     private static func signInKey(_ id: String) -> String { "SideACPSignIn.\(id)" }
     static func keychainAccount(_ id: String) -> String { "acp.\(id)" }
 
+    /// Until the person chooses: the subscription, except for an agent whose key is already in
+    /// Side's environment, where that key is often the only credential (an exported Gemini or
+    /// OpenAI key; 2026-09-30 audit, UX-14). Not Claude Code, where an exported key silently
+    /// bills instead of the login (D7 addendum).
     public var signIn: SignIn {
-        get { Self.defaults.string(forKey: Self.signInKey(id)).flatMap(SignIn.init(rawValue:)) ?? .subscription }
+        get { Self.defaults.string(forKey: Self.signInKey(id)).flatMap(SignIn.init(rawValue:)) ?? defaultSignIn }
         nonmutating set { Self.defaults.set(newValue.rawValue, forKey: Self.signInKey(id)) }
+    }
+
+    var defaultSignIn: SignIn {
+        let environment = ProcessInfo.processInfo.environment
+        let exported = apiKeyVariables.contains { environment[$0]?.isEmpty == false }
+        return exported && id != "claude-code" ? .apiKey : .subscription
     }
 
     /// Whether this agent can take a key at all (it names a variable to read it from).
@@ -140,9 +142,12 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     /// The environment to launch the agent with, from the app's spawn environment. Subscription:
     /// every key variable removed, so the agent uses its login. API key: the stored key (or,
     /// without one, a key already in the environment) in the first variable, the rest removed.
+    /// The base is usually `SpawnEnvironment`'s, which has no keys in it, so a key already there
+    /// is looked for in Side's own environment too.
     public func launchEnvironment(from base: [String: String]) -> [String: String] {
         var environment = base
-        let inherited = apiKeyVariables.lazy.compactMap { base[$0] }.first { !$0.isEmpty }
+        let own = ProcessInfo.processInfo.environment
+        let inherited = apiKeyVariables.lazy.compactMap { base[$0] ?? own[$0] }.first { !$0.isEmpty }
         for name in apiKeyVariables { environment.removeValue(forKey: name) }
         if signIn == .apiKey, let variable = apiKeyVariables.first, let key = storedAPIKey ?? inherited {
             environment[variable] = key

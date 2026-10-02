@@ -22,7 +22,7 @@ public struct MCPServerConfig: Codable, Equatable, Sendable, Identifiable {
 public enum MCPServerStore {
     public static let didChangeNotification = Notification.Name("SideMCPServersDidChange")
     /// Where this type persists. Tests point it at a private suite.
-    public nonisolated(unsafe) static var defaults: UserDefaults = .standard
+    public nonisolated(unsafe) static var defaults: UserDefaults = HeronDefaults.store
     private static let key = "SideMCPServers"
     /// The name Side's own tool server goes by, so a user's server can't shadow it.
     public static let reservedName = "side"

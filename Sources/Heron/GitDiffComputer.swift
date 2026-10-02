@@ -149,6 +149,7 @@ public enum GitDiffComputer {
 
     private static func runGit(_ args: [String], cwd: String) -> String {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-C", cwd] + args
         let outPipe = Pipe()

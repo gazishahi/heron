@@ -9,7 +9,7 @@ final class ProjectRulesTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         savedDefaults = ProjectRules.defaults
-        ProjectRules.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        ProjectRules.defaults = throwawayDefaults()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("rules-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
@@ -76,6 +76,21 @@ final class ProjectRulesTests: XCTestCase {
 
     // MARK: - Consent (audit F4)
 
+    /// SEC-13 (2026-09-30 audit): the fingerprint is SHA-256, and an acceptance recorded under
+    /// the old FNV-1a fingerprint no longer counts, so the file is asked about again.
+    func testAcceptanceIsBySHA256AndOldFingerprintsAreAskedAgain() {
+        let url = root.appendingPathComponent("AGENTS.md")
+        XCTAssertEqual(ProjectRules.fingerprint(url: url, contents: "abc"),
+                       "\(url.standardizedFileURL.path)#sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        var fnv: UInt64 = 0xcbf29ce484222325
+        for byte in "abc".utf8 { fnv = (fnv ^ UInt64(byte)) &* 0x100000001b3 }
+        ProjectRules.defaults.set(["\(url.standardizedFileURL.path)#\(String(fnv, radix: 36))"], forKey: "SideAcknowledgedProjectRules")
+        XCTAssertFalse(ProjectRules.isAcknowledged(url: url, contents: "abc"))
+        ProjectRules.acknowledge(url: url, contents: "abc")
+        XCTAssertTrue(ProjectRules.isAcknowledged(url: url, contents: "abc"))
+        XCTAssertFalse(ProjectRules.isAcknowledged(url: url, contents: "abd"))
+    }
+
     func testARulesFileIsFoldedInOnlyWhileItsCurrentContentsAreAcknowledged() throws {
         // The injection case: a rules file arrives with a cloned repo and must not reach the
         // system prompt just because it exists.
@@ -97,4 +112,10 @@ final class ProjectRulesTests: XCTestCase {
         XCTAssertNil(ProjectRules.load(projectRoot: root))
         XCTAssertNotNil(ProjectRules.pendingAcknowledgement(projectRoot: root))
     }
+}
+
+extension XCTestCase {
+    /// A settings store of this test's own, in memory (`InMemoryDefaults`): stores made with a
+    /// suite name per test had piled up in ~/Library/Preferences (2,443 files by 2026-10-01).
+    func throwawayDefaults() -> UserDefaults { InMemoryDefaults() }
 }

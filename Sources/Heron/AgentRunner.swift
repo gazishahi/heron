@@ -672,8 +672,21 @@ public final class AgentRunner {
                 resultText: "Rejected by the user. Ask what they'd prefer instead of retrying the same command.", isError: true
             )
         case .apply:
+            // The person let this site be fetched: later fetches from it may run unattended.
+            if let host = presentation.command.fetchURL?.host?.lowercased() { approvedFetchHosts.insert(host) }
             executeCommand(entryIndex: entryIndex)
         }
+    }
+
+    /// Sites the person approved a fetch from in this conversation. Below Full, a fetch runs
+    /// without asking only to one of these: a URL's path can carry what the agent has read to
+    /// any site it names (2026-09-30 audit, SEC-10; the query and fragment were refused already).
+    var approvedFetchHosts: Set<String> = []
+
+    /// Whether a fetch may run without asking.
+    func fetchAutoRuns(_ url: URL) -> Bool {
+        if modeProvider().autonomy.autoAppliesEdits { return true }
+        return url.host.map { approvedFetchHosts.contains($0.lowercased()) } ?? false
     }
 
     /// Types the command into the track's own Run session (see `WorkspaceBridge.runShellCommand`)
@@ -1829,8 +1842,8 @@ public final class AgentRunner {
                     if modeProvider().autonomy.autoAppliesEdits, promotion.fullMayApply { autoRunEntryIndices.append(index) }
                     continue
                 }
-                let autoRunnable = command.fetchURL != nil
-                    || CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider())
+                let autoRunnable = command.fetchURL.map(fetchAutoRuns)
+                    ?? CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider())
                 // …and never while the agent's terminal sits outside the worktree (audit D-10).
                 if modeProvider().autonomy.autoRunsAllowlistedCommands, autoRunnable,
                    command.fetchURL != nil || !bridgeProvider().agentTerminalIsOutsideWorktree() { autoRunEntryIndices.append(index) }
