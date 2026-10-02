@@ -51,6 +51,8 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(messages: messages, system: system, tools: tools), options: .sortedKeys)
 
         let state = TurnState()
+        // However the stream ends (Stop's cancellation included), a started reply is counted.
+        defer { if let usage = state.unfinishedUsage { onEvent(.usageWithoutEnd(usage)) } }
         do {
             try await SSEHTTPClient.stream(request: request) { sse in
                 Self.handle(sse: sse, state: state, onEvent: onEvent)
@@ -169,8 +171,21 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
         public var cachedInputTokens: Int?
         public var cacheWriteInputTokens: Int?
         public var outputTokens: Int?
+        /// `message_stop` arrived.
+        public var ended = false
+        /// Characters of text, thinking and tool input streamed so far: the output estimate when
+        /// the reply ends early, at about four to a token.
+        public var streamedCharacters = 0
 
         public init() {}
+
+        /// What a reply that ended before `message_stop` was billed, as far as is known: nil
+        /// once it ended, or if it never started.
+        public var unfinishedUsage: TokenUsage? {
+            guard !ended, let input = inputTokens else { return nil }
+            return TokenUsage(inputTokens: input, outputTokens: outputTokens ?? (streamedCharacters + 3) / 4,
+                              cachedInputTokens: cachedInputTokens, cacheWriteInputTokens: cacheWriteInputTokens)
+        }
     }
 
     public static func handle(sse: SSEEvent, state: TurnState, onEvent: (AgentStreamEvent) -> Void) {
@@ -198,16 +213,17 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
             guard let delta = object["delta"] as? [String: Any] else { return }
             switch delta["type"] as? String {
             case "text_delta":
-                if let text = delta["text"] as? String { onEvent(.textDelta(text)) }
+                if let text = delta["text"] as? String { state.streamedCharacters += text.utf16.count; onEvent(.textDelta(text)) }
             case "thinking_delta":
                 // Claude 4 and later return *summarized* thinking, so this is already the short
                 // form rather than the full chain — which is exactly what belongs in a collapsed
                 // activity group. `signature_delta` is deliberately ignored: it exists to let a
                 // thinking block be passed back intact, and nothing here passes them back.
-                if let thinking = delta["thinking"] as? String { onEvent(.thinkingDelta(thinking)) }
+                if let thinking = delta["thinking"] as? String { state.streamedCharacters += thinking.utf16.count; onEvent(.thinkingDelta(thinking)) }
             case "input_json_delta":
                 if let index = object["index"] as? Int, let id = state.toolUseIdsByIndex[index],
                    let partial = delta["partial_json"] as? String {
+                    state.streamedCharacters += partial.utf16.count
                     onEvent(.toolUseInputDelta(id: id, partialJSON: partial))
                 }
             default:
@@ -229,6 +245,7 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
                 if let write = usage["cache_creation_input_tokens"] as? Int { state.cacheWriteInputTokens = write }
             }
         case "message_stop":
+            state.ended = true
             let usage = TokenUsage(inputTokens: state.inputTokens ?? 0, outputTokens: state.outputTokens ?? 0,
                                    cachedInputTokens: state.cachedInputTokens, cacheWriteInputTokens: state.cacheWriteInputTokens)
             onEvent(.messageEnd(stopReason: state.stopReason, usage: usage))

@@ -69,10 +69,12 @@ final class CheckpointCostTests: XCTestCase {
                       "1 .M N... 100644 100644 100644 aaaa aaaa src/a b.swift",
                       "2 R. N... 100644 100644 100644 bbbb bbbb R100 new.swift", "old.swift",
                       "u UU N... 100644 100644 100644 100644 cccc dddd eeee both.swift",
+                      "1 .M S.M. 160000 160000 160000 ffff ffff vendor",
                       "? café.txt", "! ignored.o"].joined(separator: "\0") + "\0"
         let status = GitPaths.parseStatus(output)
         XCTAssertEqual(status.head, "779f3530fee286124e742649f5cecc22561d46bb")
-        XCTAssertEqual(status.dirty, ["src/a b.swift", "new.swift", "both.swift", "café.txt"])
+        XCTAssertEqual(status.dirty, ["src/a b.swift", "new.swift", "old.swift", "both.swift", "vendor", "café.txt"], "a staged rename's source too (GIT-4)")
+        XCTAssertEqual(status.submodulesWithUncommittedWork, ["vendor"], "GIT-6")
         XCTAssertTrue(status.hasStaged)
         XCTAssertFalse(GitPaths.parseStatus("# branch.oid (initial)\0? a\0").hasStaged)
         XCTAssertNil(GitPaths.parseStatus("# branch.oid (initial)\0").head)

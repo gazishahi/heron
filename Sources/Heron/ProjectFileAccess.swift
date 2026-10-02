@@ -30,22 +30,50 @@ public enum ProjectFileAccess {
     /// 20,000-file project. A directory's modification time changes whenever an entry in it is
     /// added, removed or renamed, and the list is names only, so the walk still holds while every
     /// directory it went through has the time it had. Checking that is a stat per directory.
+    ///
+    /// The last `cachedRoots` roots are kept (about 15 MB for 20,000 files each), the oldest let
+    /// go: every worktree used to stay for the session, deleted tracks' too (2026-09-30 audit,
+    /// CON-6). A walk cut short at `maxIndexedFiles` is kept as well: it's what a new walk would
+    /// return while its directories hold, and a large project used to walk again on every call.
     public nonisolated static func scan(root: URL) -> [ScannedFile] {
         let key = root.standardizedFileURL.path
         if let cached = scanCacheLock.withLock({ scanCache[key] }), cached.directories.allSatisfy({ modificationTime($0.path) == $0.time }) {
+            scanCacheLock.withLock { touch(key) }
             return cached.files
         }
         var directories: [(path: String, time: Int)] = []
         let files = walk(root: root, directories: &directories)
-        // A walk cut short at the cap isn't the whole list, so it isn't kept.
-        if files.count < maxIndexedFiles {
-            scanCacheLock.withLock { scanCache[key] = (files, directories) }
+        scanCacheLock.withLock {
+            scanCache[key] = (files, directories)
+            touch(key)
+            while scanOrder.count > cachedRoots { scanCache[scanOrder.removeFirst()] = nil }
         }
         return files
     }
 
+    /// A root that's gone (a track's folder removed): its walk is let go now.
+    public nonisolated static func forget(root: URL) {
+        let key = root.standardizedFileURL.path
+        scanCacheLock.withLock {
+            scanCache[key] = nil
+            scanOrder.removeAll { $0 == key }
+        }
+    }
+
+    public static let cachedRoots = 3
+
+    /// Under the lock: `key` is the most recent.
+    private static func touch(_ key: String) {
+        scanOrder.removeAll { $0 == key }
+        scanOrder.append(key)
+    }
+
+    /// How many roots are cached, for tests.
+    static var cachedRootCount: Int { scanCacheLock.withLock { scanCache.count } }
+
     private static let scanCacheLock = NSLock()
     nonisolated(unsafe) private static var scanCache: [String: (files: [ScannedFile], directories: [(path: String, time: Int)])] = [:]
+    nonisolated(unsafe) private static var scanOrder: [String] = []
 
     /// Nanoseconds.
     private static func modificationTime(_ path: String) -> Int? {

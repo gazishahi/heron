@@ -35,7 +35,7 @@ macOS 15 or later, Swift 6.
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/gazishahi/heron", from: "0.1.0")
+.package(url: "https://github.com/gazishahi/heron", from: "0.1.2")
 ```
 
 `AgentRunnerManager` is the entry point an app holds per project: it creates one harness per

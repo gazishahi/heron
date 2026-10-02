@@ -23,6 +23,8 @@ final class FakeModelServer: @unchecked Sendable {
     private var bodies: [Data] = []
     private let script: @Sendable (_ index: Int, _ body: [String: Any]) -> Reply
     private(set) var port: UInt16 = 0
+    /// What the model list answers: 404 ("none new") by default, or a status to test a key with.
+    var modelsStatus = 404
 
     /// Request bodies, in order (the `/v1/models` refresh isn't one).
     var requests: [Data] { lock.withLock { bodies } }
@@ -81,8 +83,9 @@ final class FakeModelServer: @unchecked Sendable {
 
     private func respond(to request: (path: String, body: Data), on connection: NWConnection) {
         guard request.path.hasPrefix("/v1/messages") else {
-            // The model list: "none new", so the seeded ones stay.
-            send("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", on: connection)
+            // The model list: "none new", so the seeded ones stay (or `modelsStatus`).
+            let body = modelsStatus == 200 ? #"{"data":[]}"# : ""
+            send("HTTP/1.1 \(modelsStatus) Status\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)", on: connection)
             return
         }
         let index: Int = lock.withLock {

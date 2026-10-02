@@ -198,6 +198,9 @@ public enum GitPaths {
         public var ignored: Set<String> = []
         public var head: String?
         public var hasStaged = false
+        /// Submodules with changes inside them that aren't a commit (`S.M.`, `S..U`): the parent
+        /// can only record a submodule's commit, so these can't be checkpointed from here.
+        public var submodulesWithUncommittedWork: Set<String> = []
     }
 
     /// `includeIgnored` adds git's ignored entries (a directory is one entry): what
@@ -246,10 +249,22 @@ public enum GitPaths {
                 let xy = entry.dropFirst(2).prefix(2)
                 if xy.first != "." { status.hasStaged = true }
                 let fields = entry.first == "1" ? 8 : (entry.first == "2" ? 9 : 10)
-                if let path = path(after: fields) { status.dirty.insert(path) }
-                // A rename's source path is the next field; it isn't dirty in its own right, and
-                // staging it would name a path that no longer exists.
-                if entry.first == "2" { position += 1 }
+                guard let path = path(after: fields) else { continue }
+                status.dirty.insert(path)
+                // The submodule field, `N...` or `S<c><m><u>`: M, tracked changes; U, untracked.
+                let submodule = entry.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: false).dropFirst(2).first ?? ""
+                if submodule.hasPrefix("S"), submodule.contains("M") || submodule.contains("U") {
+                    status.submodulesWithUncommittedWork.insert(path)
+                }
+                // A rename's source path is the next field. A staged rename (`R` in X) took it
+                // out of the index, so it's dirty too: without it, a `git mv` was checkpointed as
+                // a copy, the source left in the commit and its deletion left staged (2026-09-30
+                // audit, GIT-4). It's in HEAD, which the checkpoint's index starts from, so
+                // staging it stages the removal.
+                if entry.first == "2" {
+                    if xy.first == "R", position < entries.count { status.dirty.insert(String(entries[position])) }
+                    position += 1
+                }
             case "?":
                 status.dirty.insert(String(entry.dropFirst(2)))
             case "!":

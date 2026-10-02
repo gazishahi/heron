@@ -120,4 +120,62 @@ final class BudgetBoundaryTests: XCTestCase {
         XCTAssertEqual(heron.send("Hello?", timeout: 10), .blocked(.budgetReached))
         XCTAssertEqual(server.requests.count, 0)
     }
+
+    // MARK: HER-6 / PRV-3: replies that never finish are billed, and counted
+
+    /// A reply that streamed and stopped: its input as `message_start` gave it, its output
+    /// estimated from what streamed. Nothing for one that finished (its end counts) or never
+    /// started.
+    func testAnUnfinishedReplyKnowsWhatItCost() {
+        let state = AnthropicMessagesProvider.TurnState()
+        XCTAssertNil(state.unfinishedUsage, "never started")
+        for (name, data) in [
+            ("message_start", #"{"type":"message_start","message":{"usage":{"input_tokens":900,"cache_read_input_tokens":30000,"output_tokens":1}}}"#),
+            ("content_block_delta", #"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\#(String(repeating: "a", count: 400))"}}"#),
+        ] {
+            AnthropicMessagesProvider.handle(sse: SSEEvent(event: name, data: data), state: state) { _ in }
+        }
+        XCTAssertEqual(state.unfinishedUsage, TokenUsage(inputTokens: 900, outputTokens: 100, cachedInputTokens: 30_000, cacheWriteInputTokens: nil))
+        AnthropicMessagesProvider.handle(sse: SSEEvent(event: "message_stop", data: #"{"type":"message_stop"}"#), state: state) { _ in }
+        XCTAssertNil(state.unfinishedUsage, "finished: its messageEnd counts it")
+    }
+
+    /// An error part-way (overloaded): the request is in Usage, and so against the budget.
+    func testAReplyCutOffByAnErrorIsCounted() throws {
+        let project = try HeronRequestMeasurementTests.fixtureProject()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let server = try FakeModelServer { _, _ in .cutToolCall(name: "read_file", partialInput: #"{"path":"RE"#, overloaded: true) }
+        defer { server.stop() }
+        let heron = try HeadlessHeron(project: project, baseURL: server.baseURL, modelId: "claude-sonnet-5",
+                                      mode: AgentMode(scope: .ask, autonomy: .manual))
+        defer { heron.cleanUp() }
+        heron.send("Read the README.", timeout: 10)
+        XCTAssertEqual(server.requests.count, 1)
+        XCTAssertEqual(heron.totals.requestCount, 1)
+        XCTAssertEqual(heron.totals.inputTokens, server.requests[0].count / 4, "the input message_start reported")
+        XCTAssertGreaterThan(heron.totals.outputTokens, 0)
+    }
+
+    /// Stop in the middle of a reply: what it cost so far is counted.
+    func testAStoppedReplyIsCounted() throws {
+        let project = try HeronRequestMeasurementTests.fixtureProject()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let server = try FakeModelServer { _, _ in .streamedText(String(repeating: "word ", count: 2_000), delta: 5, duration: 5) }
+        defer { server.stop() }
+        let heron = try HeadlessHeron(project: project, baseURL: server.baseURL, modelId: "claude-sonnet-5",
+                                      mode: AgentMode(scope: .ask, autonomy: .manual))
+        defer { heron.cleanUp() }
+        heron.runner.send("Write a long answer.")
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, !heron.runner.entries.contains(where: { if case .assistantText(let text) = $0.kind { return text.count > 200 } else { return false } }) {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        heron.runner.stop()
+        let settled = Date().addingTimeInterval(5)
+        while Date() < settled, heron.totals.requestCount == 0 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        XCTAssertEqual(heron.totals.requestCount, 1)
+        XCTAssertEqual(heron.totals.inputTokens, server.requests[0].count / 4)
+        XCTAssertGreaterThan(heron.totals.outputTokens, 50, "estimated from what streamed")
+        XCTAssertLessThan(heron.totals.outputTokens, 2_500, "not the whole reply")
+    }
 }

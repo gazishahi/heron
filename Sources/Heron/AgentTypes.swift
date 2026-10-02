@@ -163,6 +163,12 @@ public enum AgentStreamEvent: Sendable {
     case toolUseInputDelta(id: String, partialJSON: String)
     case toolUseEnd(id: String)
     case messageEnd(stopReason: StopReason, usage: TokenUsage?)
+    /// A reply that ended before its `messageEnd`: stopped, stalled, cut off by an error or a
+    /// dropped connection. It was still billed, so this carries what the provider had said (the
+    /// input when the reply started) and an estimate of the output from what streamed, for
+    /// Usage and the budget (2026-09-30 audit, HER-6 / PRV-3: these counted $0). Not an end:
+    /// the turn is still unfinished.
+    case usageWithoutEnd(TokenUsage)
     case error(AgentProviderError)
 }
 

@@ -37,4 +37,30 @@ final class ProviderModelsTests: XCTestCase {
         XCTAssertEqual(ProviderRegistryStore.parseModels(openAI)?.map(\.id), ["llama3.2"])
         XCTAssertNil(ProviderRegistryStore.parseModels(Data("nope".utf8)))
     }
+
+    /// UX-10: a saved key is checked with the provider, which says whether it takes it.
+    @MainActor
+    func testAKeyIsCheckedWithTheProvider() throws {
+        let server = try FakeModelServer { _, _ in .text("") }
+        defer { server.stop() }
+        let state = FileManager.default.temporaryDirectory.appendingPathComponent("keycheck-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: state) }
+        let registry = ProviderRegistryStore(storeURL: state.appendingPathComponent("providers.json"))
+        var anthropic = try XCTUnwrap(registry.provider(for: "anthropic"))
+        anthropic.baseURL = server.baseURL
+        registry.addOrUpdate(anthropic)
+        func check() -> ProviderRegistryStore.KeyCheck? {
+            var result: ProviderRegistryStore.KeyCheck?
+            registry.checkKey(providerId: "anthropic", apiKey: "k") { result = $0 }
+            let deadline = Date().addingTimeInterval(10)
+            while result == nil, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            return result
+        }
+        server.modelsStatus = 200
+        XCTAssertEqual(check(), .accepted)
+        server.modelsStatus = 401
+        XCTAssertEqual(check(), .refused(status: 401))
+        server.modelsStatus = 503
+        XCTAssertEqual(check(), .unknown("HTTP 503"))
+    }
 }

@@ -50,6 +50,14 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(messages: messages, system: system, tools: tools), options: .sortedKeys)
 
         let state = TurnState()
+        // A reply cut off after its usage arrived is still counted (HER-6). OpenAI sends usage
+        // only in the last chunk, so a stopped reply usually has none to give.
+        defer {
+            if !state.ended, let prompt = state.promptTokens {
+                onEvent(.usageWithoutEnd(TokenUsage(inputTokens: max(0, prompt - (state.cachedTokens ?? 0)), outputTokens: state.completionTokens ?? 0,
+                                                    cachedInputTokens: state.cachedTokens)))
+            }
+        }
         do {
             try await SSEHTTPClient.stream(request: request) { sse in
                 if Self.handle(sse: sse, state: state, onEvent: onEvent) { state.ended = true }

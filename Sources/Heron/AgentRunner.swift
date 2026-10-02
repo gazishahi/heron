@@ -320,8 +320,11 @@ public final class AgentRunner {
 
     /// The reason `isReadyToSend` is false, for the UI to show.
     public var notReadyReason: String {
-        let name = providerRegistry.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
-        return "No API key for \(name) yet. Add one in Settings (⌘,). It's stored in your Keychain."
+        // A provider removed in Settings isn't missing a key: it's gone (UX-10).
+        guard let provider = providerRegistry.provider(for: resolvedSelection().providerId) else {
+            return "This track's provider was removed in Settings. Choose another provider for it, or add it back in Settings (⌘,)."
+        }
+        return "No API key for \(provider.displayName) yet. Add one in Settings (⌘,). It's stored in your Keychain."
     }
 
     public func send(_ text: String, attachments: [AgentImageAttachment] = []) {
@@ -944,12 +947,13 @@ public final class AgentRunner {
         let commitMessage = described.isEmpty ? "Agent checkpoint" : String(described.prefix(72))
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Self.stageAndCommit(
+            let (result, submodules) = Self.stageAndCommitReporting(
                 root: root, baseline: baseline, knownChanged: knownChanged, userSaved: userSaved, message: commitMessage
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return completion() }
                 self.recordCheckpoint(result, batch: batch, sessionId: session.id)
+                if let note = Self.uncommittedSubmoduleNote(submodules) { self.appendEntry(.failure(note)) }
                 completion()
             }
         }
@@ -961,6 +965,15 @@ public final class AgentRunner {
     public nonisolated static func stageAndCommit(
         root: String, baseline: Set<String>?, knownChanged: Set<String>, userSaved: Set<String> = [], message: String
     ) -> CheckpointCommitOutcome? {
+        stageAndCommitReporting(root: root, baseline: baseline, knownChanged: knownChanged, userSaved: userSaved, message: message).outcome
+    }
+
+    /// `stageAndCommit`, and the batch's submodules whose changes are inside them, uncommitted:
+    /// a checkpoint can't hold those, and the person is told (2026-09-30 audit, GIT-6: they got
+    /// "✓ Checkpoint … (no file changes)").
+    public nonisolated static func stageAndCommitReporting(
+        root: String, baseline: Set<String>?, knownChanged: Set<String>, userSaved: Set<String> = [], message: String
+    ) -> (outcome: CheckpointCommitOutcome?, uncommittedSubmodules: [String]) {
 
         // Stage only what this batch actually touched: paths a command left newly dirty (not
         // already dirty before the batch started — that's a concurrent manual edit sitting in
@@ -979,7 +992,7 @@ public final class AgentRunner {
         let indexModified = indexFile.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate] as? Date }
         let indexBefore = indexFile.flatMap { try? Data(contentsOf: $0) }
         guard let status = GitPaths.status(cwd: root) else {
-            return .failed(step: "status", message: "git status failed in \(root)")
+            return (.failed(step: "status", message: "git status failed in \(root)"), [])
         }
         let indexAfter = indexFile.flatMap { try? Data(contentsOf: $0) }
         // Without a baseline (git status failed before the batch) nothing newly dirty can be
@@ -989,12 +1002,21 @@ public final class AgentRunner {
         let pathsToStage = newlyDirty.union(knownChanged)
         // Everything the batch did left the tree exactly as it already was (e.g. a command that
         // ran but touched nothing) — nothing to checkpoint at all.
-        guard !pathsToStage.isEmpty else { return nil }
+        guard !pathsToStage.isEmpty else { return (nil, []) }
+        let submodules = status.submodulesWithUncommittedWork.intersection(pathsToStage).sorted()
         let realIndex: (url: URL, contents: Data, modified: Date)? = {
             guard let indexFile, let indexBefore, let indexModified, indexBefore == indexAfter, !status.hasStaged else { return nil }
             return (indexFile, indexBefore, indexModified)
         }()
-        return commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root, head: status.head, realIndex: realIndex)
+        return (commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root, head: status.head, realIndex: realIndex), submodules)
+    }
+
+    /// What to say about a batch's submodule changes that a checkpoint couldn't hold.
+    public nonisolated static func uncommittedSubmoduleNote(_ paths: [String]) -> String? {
+        guard !paths.isEmpty else { return nil }
+        let names = paths.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", ")
+        let one = paths.count == 1
+        return "Not in the checkpoint: the changes inside the submodule\(one ? "" : "s") \(names). A checkpoint records a submodule's commit, not files changed inside it, so undoing it won't touch them. Commit them in the submodule to have them checkpointed."
     }
 
     /// The description a checkpoint is filed under. "no description" is the one thing a durable
@@ -1184,7 +1206,17 @@ public final class AgentRunner {
                 // instruction asks for text, and only text is collected.
                 try await provider.streamTurn(messages: messages, system: systemPrompt, tools: tools) { event in
                     if case .textDelta(let delta) = event { collector.append(delta) }
-                    DispatchQueue.main.async { self?.armStallWatchdog() }
+                    // A summary is billed like any reply, finished or not; it used to count $0.
+                    let usage: TokenUsage?
+                    switch event {
+                    case .messageEnd(_, let ended): usage = ended
+                    case .usageWithoutEnd(let unfinished): usage = unfinished
+                    default: usage = nil
+                    }
+                    DispatchQueue.main.async {
+                        if let usage { self?.recordUsage(usage, measuresContext: false) }
+                        self?.armStallWatchdog()
+                    }
                 }
             } catch {
                 failure = error
@@ -1490,20 +1522,30 @@ public final class AgentRunner {
             // Every round trip is billed separately, so this accumulates per streamed turn
             // rather than per user message — a reply that chains four tool calls reports four
             // times, which is what the provider actually charges for.
-            if let usage {
-                // Kept for the context gauge: a measured count beats an estimate, and the next
-                // request is this conversation plus a little.
-                lastReportedInputTokens = usage.promptTokens
-                // Persisted, so the gauge doesn't silently fall back to the lower estimate
-                // after a relaunch and report a different percentage for the same conversation.
-                sessionStore.recordReportedInputTokens(lastReportedInputTokens, forTrackKey: trackKey)
-                usageStore.record(
-                    projectPath: projectPath, trackKey: trackKey,
-                    providerId: activeProviderId,
-                    modelId: activeModelId, usage: usage
-                )
-            }
+            if let usage { recordUsage(usage, measuresContext: true) }
+        case .usageWithoutEnd(let usage):
+            // Stopped, stalled or cut off, and billed all the same (HER-6 / PRV-3).
+            recordUsage(usage, measuresContext: true)
         }
+    }
+
+    /// One round trip's cost into Usage (and so the budget). `measuresContext`: its input is
+    /// this conversation's size, for the context gauge; a compaction request's isn't what the
+    /// conversation will be after it.
+    private func recordUsage(_ usage: TokenUsage, measuresContext: Bool) {
+        if measuresContext {
+            // Kept for the context gauge: a measured count beats an estimate, and the next
+            // request is this conversation plus a little.
+            lastReportedInputTokens = usage.promptTokens
+            // Persisted, so the gauge doesn't silently fall back to the lower estimate
+            // after a relaunch and report a different percentage for the same conversation.
+            sessionStore.recordReportedInputTokens(lastReportedInputTokens, forTrackKey: trackKey)
+        }
+        usageStore.record(
+            projectPath: projectPath, trackKey: trackKey,
+            providerId: activeProviderId,
+            modelId: activeModelId, usage: usage
+        )
     }
 
     // MARK: - Streaming edit previews

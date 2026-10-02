@@ -68,3 +68,25 @@ final class ProjectTextSearchTests: XCTestCase {
         XCTAssertTrue(try search("gamma", live: ["a.swift": "unsaved edit\n"]).matches.isEmpty)
     }
 }
+
+/// CON-6 (2026-09-30 audit): the file walk is kept for a few roots, not every one ever seen, and
+/// a walk cut short at the cap is kept too.
+final class ScanCacheTests: XCTestCase {
+    func testOnlyTheRecentRootsAreKept() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("scan-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        var roots: [URL] = []
+        for index in 0..<(ProjectFileAccess.cachedRoots + 3) {
+            let root = base.appendingPathComponent("r\(index)")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try "x".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+            roots.append(root)
+            XCTAssertEqual(ProjectFileAccess.scan(root: root).map(\.relativePath), ["a.txt"])
+        }
+        XCTAssertLessThanOrEqual(ProjectFileAccess.cachedRootCount, ProjectFileAccess.cachedRoots)
+        ProjectFileAccess.forget(root: roots.last!)
+        XCTAssertLessThanOrEqual(ProjectFileAccess.cachedRootCount, ProjectFileAccess.cachedRoots - 1)
+        // Still right after being let go: walked again.
+        XCTAssertEqual(ProjectFileAccess.scan(root: roots[0]).map(\.relativePath), ["a.txt"])
+    }
+}

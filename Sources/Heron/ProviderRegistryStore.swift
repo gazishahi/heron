@@ -115,6 +115,42 @@ public final class ProviderRegistryStore: @unchecked Sendable {
         }.resume()
     }
 
+    /// What a provider said about a key.
+    public enum KeyCheck: Equatable, Sendable {
+        case accepted
+        /// 401 or 403: the key is wrong, revoked, or lacks access.
+        case refused(status: Int)
+        /// No answer, or one that says nothing about the key (a 5xx, a server without a model
+        /// list): it may still work.
+        case unknown(String)
+    }
+
+    /// Asks the provider's model list with `apiKey`, which costs nothing and needs a valid key:
+    /// a saved key used to be found wrong only when Think's first message failed with HTTP 401
+    /// (2026-09-30 audit, UX-10).
+    @MainActor public func checkKey(providerId: String, apiKey: String, completion: @escaping @MainActor (KeyCheck) -> Void) {
+        guard let definition = provider(for: providerId) else { return completion(.unknown("No such provider.")) }
+        let anthropic = definition.id == "anthropic"
+        var request = URLRequest(url: definition.baseURL.appendingPathComponent(anthropic ? "v1/models" : "models").appending(queryItems: [URLQueryItem(name: "limit", value: "1")]))
+        request.timeoutInterval = 15
+        if anthropic {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        } else {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        Self.modelsSession.dataTask(with: request) { _, response, error in
+            let result: KeyCheck
+            switch (response as? HTTPURLResponse)?.statusCode {
+            case 200?: result = .accepted
+            case let status? where status == 401 || status == 403: result = .refused(status: status)
+            case let status?: result = .unknown("HTTP \(status)")
+            case nil: result = .unknown(error?.localizedDescription ?? "No answer")
+            }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(result) } }
+        }.resume()
+    }
+
     /// Refuses redirects, as the streaming client does: `.shared` followed a 302 with the key
     /// header still on, and a loopback test delivered it to the second host (2026-09-30 audit,
     /// SEC-12). This runs unasked once a day, so it gets no session a caller could swap in.

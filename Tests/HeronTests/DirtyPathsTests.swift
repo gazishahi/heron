@@ -91,12 +91,48 @@ final class DirtyPathsTests: XCTestCase {
         XCTAssertEqual(status.ignored, [".env", "build/"], "an ignored directory is one entry")
     }
 
-    func testARenameReportsOnlyTheDestination() throws {
+    func testARenameReportsBothPathsAndNothingElse() throws {
         git(["mv", "src/a.txt", "src/renamed.txt"])
         let paths = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
-        // Under -z a rename is two NUL-separated fields; the source no longer exists, so
-        // including it would stage a path git must reject.
-        XCTAssertTrue(paths.contains("src/renamed.txt"), "\(paths)")
-        XCTAssertFalse(paths.contains("src/a.txt"), "\(paths)")
+        // Under -z a rename is two NUL-separated fields: the destination, then the source. The
+        // source is dirty too (GIT-4); the two fields mustn't run into one another or the next
+        // entry.
+        XCTAssertEqual(paths, ["src/renamed.txt", "src/a.txt"])
+    }
+
+    /// GIT-4: a `git mv` in a batch is a move in the checkpoint, and leaves nothing staged.
+    func testAStagedRenameIsCheckpointedAsAMove() throws {
+        let baseline = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
+        git(["mv", "src/a.txt", "src/moved.txt"])
+        XCTAssertEqual(GitPaths.dirtyPaths(cwd: root.path), ["src/moved.txt", "src/a.txt"], "the source too")
+        guard case .committed? = AgentRunner.stageAndCommit(root: root.path, baseline: baseline, knownChanged: [], message: "move") else {
+            return XCTFail("not committed")
+        }
+        let tree = GitPaths.runGit(["ls-tree", "-r", "--name-only", "HEAD"], cwd: root.path).output
+        XCTAssertEqual(tree.split(separator: "\n"), ["src/b.txt", "src/moved.txt"], "a move, not a copy")
+        XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: root.path).output, "", "nothing left staged")
+    }
+
+    /// GIT-6: changes inside a submodule aren't passed off as a checkpoint with no changes.
+    func testChangesInsideASubmoduleAreNamed() throws {
+        let inner = FileManager.default.temporaryDirectory.appendingPathComponent("inner-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: inner) }
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        for args in [["init", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "T"]] {
+            XCTAssertTrue(GitPaths.runGit(args, cwd: inner.path).success)
+        }
+        try "inner\n".write(to: inner.appendingPathComponent("lib.txt"), atomically: true, encoding: .utf8)
+        XCTAssertTrue(GitPaths.runGit(["add", "."], cwd: inner.path).success)
+        XCTAssertTrue(GitPaths.runGit(["commit", "-m", "inner"], cwd: inner.path).success)
+        git(["-c", "protocol.file.allow=always", "submodule", "add", inner.path, "vendor"])
+        git(["commit", "-m", "submodule"])
+
+        let baseline = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
+        try "edited\n".write(to: root.appendingPathComponent("vendor/lib.txt"), atomically: true, encoding: .utf8)
+        let (outcome, submodules) = AgentRunner.stageAndCommitReporting(root: root.path, baseline: baseline, knownChanged: [], message: "edit")
+        guard case .nothingToCommit? = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertEqual(submodules, ["vendor"])
+        XCTAssertNotNil(AgentRunner.uncommittedSubmoduleNote(submodules))
+        XCTAssertNil(AgentRunner.uncommittedSubmoduleNote([]))
     }
 }

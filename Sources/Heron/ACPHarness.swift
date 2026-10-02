@@ -1338,7 +1338,7 @@ public final class ACPHarness: Harness {
             // back has nothing to commit, and `git add` of a vanished untracked path would fail.
             // A failed status here fails the commit's own status too, which is reported.
             let dirty = GitPaths.dirtyPaths(cwd: root) ?? []
-            let outcome = AgentRunner.stageAndCommit(root: root, baseline: baseline, knownChanged: touched.intersection(dirty),
+            let (outcome, submodules) = AgentRunner.stageAndCommitReporting(root: root, baseline: baseline, knownChanged: touched.intersection(dirty),
                                                      userSaved: userSaved, message: intent.isEmpty ? "\(agent.displayName) checkpoint" : intent)
             var fileChanges: [CheckpointFileChange] = []
             if let sha = outcome?.commit?.sha {
@@ -1350,9 +1350,11 @@ public final class ACPHarness: Harness {
                     // the meantime (the app quitting right after a turn): a commit with no
                     // checkpoint record can't be found in Review or undone from it.
                     var lines: [RunTranscriptEntry.Kind] = []
+                    // Said whatever else happened (GIT-6).
+                    if let note = AgentRunner.uncommittedSubmoduleNote(submodules) { lines.append(.failure(note)) }
                     switch outcome {
                     case .none, .nothingToCommit?:
-                        return
+                        break
                     case .failed(let step, let message)?:
                         lines.append(.failure("Couldn't create a checkpoint: git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe changes are still in your working copy, uncommitted."))
                     case .committed(let sha, let paths)?, .committedIndexStale(let sha, let paths)?:
